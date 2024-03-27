@@ -225,15 +225,16 @@ class DenoisingModule(pl.LightningModule):
     def _step(self, data, mode):
         noise_pred = self(data)
         loss = F.mse_loss(noise_pred, data.pos_target)
+        batch_size = len(data.mol_conf_id)
         rmse = torch.sqrt(loss.detach())
         mae = F.l1_loss(noise_pred, data.pos_target)
 
         # logs
         if mode != 'predict':
             # Logging is disabled in the predict hooks
-            self.log(f'{mode}_loss', loss)
-            self.log(f'{mode}_rmse', rmse)
-            self.log(f'{mode}_mae', mae)
+            self.log(f'{mode}_loss', loss, batch_size=batch_size)
+            self.log(f'{mode}_rmse', rmse, batch_size=batch_size)
+            self.log(f'{mode}_mae', mae, batch_size=batch_size)
 
         return {'loss': loss, 'preds': noise_pred.detach(), 'target': data.pos_target.detach()}
 

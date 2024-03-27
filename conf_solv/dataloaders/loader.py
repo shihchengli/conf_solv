@@ -285,6 +285,7 @@ class NoisyDataset(Dataset):
             z_solute = torch.tensor(mol.get_atomic_numbers(), dtype=torch.int64)
             pos_solute = torch.tensor(mol.positions, dtype=torch.float32)
             d = NoisyData(z_solute=z_solute, pos_solute=pos_solute, position_noise_scale=position_noise_scale)
+            d.mol_conf_id = label
             self.graph_data_dict[label] = d
 
     def __len__(self):
