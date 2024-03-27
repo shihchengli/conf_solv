@@ -4,8 +4,8 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, Ea
 from pytorch_lightning import seed_everything
 from pytorch_lightning.loggers import NeptuneLogger
 from pytorch_lightning.profiler import PyTorchProfiler
-from conf_solv.dataloaders.loader import SolventData3DModule
-from conf_solv.trainer import LitConfSolvModule
+from conf_solv.dataloaders.loader import NoisyDatasetModule
+from conf_solv.trainer import DenoisingModule
 import sys
 
 import os
@@ -17,12 +17,10 @@ if 'linux' in sys.platform:
     resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
 
 
-def train_conf_solv(config):
+def train_denoising(config):
     seed_everything(config["seed"], workers=True)
-    solvation_data = SolventData3DModule(config)
-    config["node_dim"] = solvation_data.node_dim
-    config["edge_dim"] = solvation_data.edge_dim
-    model = LitConfSolvModule(config)
+    solvation_data = NoisyDatasetModule(config)
+    model = DenoisingModule(config)
     checkpoint_callback = ModelCheckpoint(
         dirpath=config["log_dir"],
         filename='best_model',
@@ -45,11 +43,11 @@ def train_conf_solv(config):
         check_finite=True,
     )
     neptune_logger = NeptuneLogger(
-        project="shihchengli/confsolv",
+        project="lagnajit/conf-solv",
         api_token=os.environ["NEPTUNE_API_TOKEN"],
         tags=[],
-        #mode="offline",
-        source_files=["~/packages/conf_solv/*/*.py"],
+        mode="offline",
+        source_files=["conf_solv/*/*.py"],
     )
     try:
         neptune_logger.run
@@ -81,6 +79,6 @@ def train_conf_solv(config):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser = LitConfSolvModule.add_args(parser)
+    parser = DenoisingModule.add_args(parser)
     args = parser.parse_args()
-    train_conf_solv(vars(args))
+    train_denoising(vars(args))

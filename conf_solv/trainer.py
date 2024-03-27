@@ -1,7 +1,7 @@
 import torch
 from torch.nn import functional as F
 import pytorch_lightning as pl
-from conf_solv.model.model import ConfSolv
+from conf_solv.model.model import ConfSolv, Denoising
 import numpy as np
 
 
@@ -122,6 +122,7 @@ class LitConfSolvModule(pl.LightningModule):
         parser.add_argument('--solute_dropout', type=float, default=0.0)
 
         # 3D model options
+        parser.add_argument('--solute_pretrained_model_path', default=None, type=str, help='Pre-trained weights checkpoint for solute.')
         parser.add_argument('--solute_model', type=str, default='DimeNet')
         parser.add_argument('--use_scaling', action='store_true', default=False)
         parser.add_argument('--diff_type', type=str, default='atom_diff')
@@ -186,6 +187,135 @@ class LitConfSolvModule(pl.LightningModule):
         parser.add_argument('--log_dir', type=str, default='./test')
         parser.add_argument('--coords_path', type=str, default='data/debug/coords.pkl.gz')
         parser.add_argument('--energies_path', type=str, default='data/debug/free_energy.pkl.gz')
+        parser.add_argument('--split_path', type=str, default='data/debug/split_0.npy')
+        parser.add_argument('--restart_path', type=str, default=None,
+                            help="Path to latest model .ckpt file")
+        parser.add_argument('--seed', type=int, default=0)
+        parser.add_argument('--verbose', action='store_true', default=False)
+        parser.add_argument('--debug', action='store_true', default=False)
+        return parent_parser
+
+    @classmethod
+    def add_args(cls, parent_parser):
+        parser = cls.add_program_args(parent_parser)  # program options
+        parser = cls.add_argparse_args(parser)  # trainer options
+        parser = cls.add_model_specific_args(parser)  # models specific args
+        return parser
+
+class DenoisingModule(pl.LightningModule):
+    def __init__(self, config):
+        super(DenoisingModule, self).__init__()
+
+        self.save_hyperparameters()
+        self.model = Denoising(config)
+        self.config = config
+        self.lr = config["lr"]
+        self.weight_decay = config["weight_decay"]
+        self.debug = config["debug"]
+
+    def forward(self, data):
+        return self.model(data)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.7,
+                                                               patience=5, min_lr=self.lr / 100)
+        return {"optimizer": optimizer, "scheduler": scheduler, "monitor": "val_loss"}
+
+    def _step(self, data, mode):
+        noise_pred = self(data)
+        loss = F.mse_loss(noise_pred, data.pos_target)
+        rmse = torch.sqrt(loss.detach())
+        mae = F.l1_loss(noise_pred, data.pos_target)
+
+        # logs
+        if mode != 'predict':
+            # Logging is disabled in the predict hooks
+            self.log(f'{mode}_loss', loss)
+            self.log(f'{mode}_rmse', rmse)
+            self.log(f'{mode}_mae', mae)
+
+        return {'loss': loss, 'preds': noise_pred.detach(), 'target': data.pos_target.detach()}
+
+    def training_step(self, data, batch_idx):
+        loss_dict = self._step(data, mode="train")
+        return loss_dict
+
+    def validation_step(self, data, batch_idx):
+        loss_dict = self._step(data, mode="val")
+        return loss_dict
+
+    def test_step(self, data, batch_idx):
+        loss_dict = self._step(data, mode="test")
+        return loss_dict
+
+    def predict_step(self, data, batch_idx):
+        loss_dict = self._step(data, mode="predict")
+        return loss_dict
+
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        parser = parent_parser.add_argument_group("models")
+
+        # 3D model options
+        parser.add_argument('--solute_hidden_dim', type=int, default=200)
+        parser.add_argument('--solute_model', type=str, default='DimeNet')
+
+        # 3D model general args
+        parser.add_argument('--num_spherical', type=int, default=6)
+        parser.add_argument('--num_radial', type=int, default=6)
+        parser.add_argument('--hidden_channels', type=int, default=128)
+        parser.add_argument('--ffn_hidden_dim', type=float, default=500)
+        parser.add_argument('--ffn_n_layers', type=int, default=4)
+        parser.add_argument('--num_blocks', type=int, default=2)
+
+        # 3D DimeNet solute args
+        parser.add_argument('--dn_num_bilinear', type=int, default=8)
+
+        # 3D SchNet model args
+        parser.add_argument('--sn_num_filters', type=int, default=128)
+        parser.add_argument('--sn_num_gaussians', type=int, default=50)
+        parser.add_argument('--sn_num_neighbours', type=int, default=32)
+        parser.add_argument('--sn_cutoff', type=float, default=10.0)
+        parser.add_argument('--sn_readout', type=str, default='add')
+        parser.add_argument('--sn_bool', type=bool, default=False)
+
+        # 3D SphereNet model args
+        parser.add_argument('--cutoff', type=float, default=5.0)
+        parser.add_argument('--num_layers', type=int, default=4)
+        parser.add_argument('--int_emb_size', type=int, default=64)
+        parser.add_argument('--basis_emb_size_dist', type=int, default=8)
+        parser.add_argument('--basis_emb_size_angle', type=int, default=8)
+        parser.add_argument('--basis_emb_size_torsion', type=int, default=8)
+        parser.add_argument('--out_emb_channels', type=int, default=256)
+        return parent_parser
+
+    @staticmethod
+    def add_argparse_args(parent_parser):
+        parser = parent_parser.add_argument_group("training")
+        parser.add_argument("--gpus", type=int, default=0)
+        parser.add_argument('--n_epochs', type=int, default=100)
+        parser.add_argument('--warmup_epochs', type=int, default=2)
+        parser.add_argument('--batch_size', type=int, default=16)
+        parser.add_argument('--lr', type=float, default=1e-3)
+        parser.add_argument('--weight_decay', type=float, default=0)
+        parser.add_argument('--num_workers', type=int, default=2)
+        parser.add_argument('--relative_model', action='store_true', default=False)
+        parser.add_argument('--relative_loss', action='store_true', default=False)
+        parser.add_argument('--n_training_points', type=int, default=None)
+        parser.add_argument('--position_noise_scale', type=float, default=0.04)
+
+        # debugging
+        parser.add_argument('--profile', action='store_true', default=False)
+        parser.add_argument('--tune', action='store_true', default=False)
+
+        return parent_parser
+
+    @staticmethod
+    def add_program_args(parent_parser):
+        parser = parent_parser.add_argument_group("program")
+        parser.add_argument('--log_dir', type=str, default='./test')
+        parser.add_argument('--coords_path', type=str, default='data/debug/coords.pkl.gz')
         parser.add_argument('--split_path', type=str, default='data/debug/split_0.npy')
         parser.add_argument('--restart_path', type=str, default=None,
                             help="Path to latest model .ckpt file")

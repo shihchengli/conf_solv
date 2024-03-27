@@ -1,3 +1,5 @@
+import re
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -96,6 +98,11 @@ class ConfSolv(nn.Module):
         elif self.solute_model_type == "EGNN":
             self.solute_model = EGNN(config)
 
+        if config["solute_pretrained_model_path"]:
+            ckpt = torch.load(config["solute_pretrained_model_path"], map_location=lambda storage, loc: storage)
+            state_dict = {re.sub(r"^model\.solute_model\.", "", k): v for k, v in ckpt["state_dict"].items()}
+            self.solute_model.load_state_dict(state_dict)
+
         self.ffn = MLP(
             in_dim=config["solvent_hidden_dim"] + config["solute_hidden_dim"],
             h_dim=config["ffn_hidden_dim"],
@@ -157,3 +164,33 @@ class ConfSolv(nn.Module):
 
         else:
             return self.ffn(h).squeeze(-1) * mask
+
+class Denoising(nn.Module):
+    def __init__(self, config):
+        super(Denoising, self).__init__()
+
+        self.config = config
+        self.solute_hidden_dim = config["solute_hidden_dim"]
+        self.solute_model_type = config["solute_model"]
+
+        if self.solute_model_type == 'DimeNetPP':
+            self.solute_model = DimeNetPlusPlus(
+                hidden_channels=config["hidden_channels"],
+                out_channels=config["solute_hidden_dim"],
+                num_blocks=config["num_blocks"],
+                int_emb_size=config["int_emb_size"],
+                basis_emb_size=config["basis_emb_size_dist"],
+                out_emb_channels=config["solute_hidden_dim"],
+                num_spherical=config["num_spherical"],
+                num_radial=config["num_radial"],
+                num_output_layers=2
+            )
+
+        else:
+            raise ValueError(f"The {self.solute_model_type} model is not supported yet for pre-traininig via molecular denoising.")
+
+    def forward(self, data):
+        noise_pred = self.solute_model(
+            data.z_solute, data.noisy_pos_solute, data.batch, update_pos=True
+        )
+        return noise_pred

@@ -234,3 +234,114 @@ class SolventData3DModule(pl.LightningDataModule):
         node_dim = len(test_graph.f_atoms[0])
         edge_dim = len(test_graph.f_bonds[0])
         return node_dim, edge_dim
+
+
+class NoisyData(Data):
+    def __init__(self, z_solute, pos_solute=None, noisy_pos_solute=None, position_noise_scale=None):
+
+        super(NoisyData, self).__init__()
+
+        self.z_solute = z_solute
+        self.pos_solute = pos_solute
+        self.noisy_pos_solute = noisy_pos_solute
+        self.position_noise_scale = position_noise_scale
+
+        if noisy_pos_solute is None and position_noise_scale is not None:
+            noise = torch.randn_like(pos_solute) * position_noise_scale
+            self.pos_ori = pos_solute
+            self.noisy_pos_solute = pos_solute + noise
+        
+        if pos_solute is not None and self.noisy_pos_solute is not None:
+            self.pos_target = self.noisy_pos_solute - self.pos_solute
+        else:
+            self.pos_target = None
+
+    def __inc__(self, key, value, *args, **kwargs):
+        if key == 'edge_index':
+            return self.x.size(0)
+        else:
+            return super().__inc__(key, value, *args, **kwargs)
+
+
+class NoisyDataset(Dataset):
+    def __init__(self, config, coords_df, split, mode):
+        super(NoisyDataset, self).__init__()
+
+        self.split_idx = 0 if mode == 'train' else 1 if mode == 'val' else 2
+        self.split = split[self.split_idx]
+
+        position_noise_scale = config["position_noise_scale"]
+        if mode == 'train' and config["n_training_points"]:
+            self.split = self.split[:config["n_training_points"]]
+
+        coords_df = coords_df[coords_df['mol_id'].isin(self.split)].copy()
+        self.mol_conf_ids = (coords_df['mol_id'] + coords_df['conf_id']).tolist()
+        coords_df['mol_conf_id'] = self.mol_conf_ids
+        self.coords = coords_df.set_index(['mol_conf_id'])
+
+        self.graph_data_dict = {}
+        for label in self.mol_conf_ids:
+            mol = self.coords.loc[label]['mol']
+            z_solute = torch.tensor(mol.get_atomic_numbers(), dtype=torch.int64)
+            pos_solute = torch.tensor(mol.positions, dtype=torch.float32)
+            d = NoisyData(z_solute=z_solute, pos_solute=pos_solute, position_noise_scale=position_noise_scale)
+            self.graph_data_dict[label] = d
+
+    def __len__(self):
+        return len(self.mol_conf_ids)
+
+    def __getitem__(self, idx) -> Data:
+        label = self.mol_conf_ids[idx]
+        graph_data = self.graph_data_dict[label]
+        return graph_data
+
+
+class NoisyDatasetModule(pl.LightningDataModule):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.batch_size = config["batch_size"]
+        self.num_workers = config["num_workers"]
+
+        self.coords_df = pd.read_pickle(config["coords_path"])
+        self.split = np.load(config["split_path"], allow_pickle=True)
+
+    def train_dataloader(self):
+        train_dataset = NoisyDataset(self.config, self.coords_df, self.split, mode="train")
+        return tg.loader.DataLoader(
+            dataset=train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def val_dataloader(self):
+        val_dataset = NoisyDataset(self.config, self.coords_df, self.split, mode="val")
+        return tg.loader.DataLoader(
+            dataset=val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def test_dataloader(self):
+        test_dataset = NoisyDataset(self.config, self.coords_df, self.split, mode="test")
+        return tg.loader.DataLoader(
+            dataset=test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def predict_dataloader(self):
+        test_dataset = NoisyDataset(self.config, self.coords_df, self.split, mode="test")
+        return tg.loader.DataLoader(
+            dataset=test_dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )

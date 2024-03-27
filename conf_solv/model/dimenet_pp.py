@@ -103,6 +103,9 @@ class InteractionPPBlock(torch.nn.Module):
             ]
         )
 
+        self.rbf_att1 = Linear(hidden_channels, hidden_channels, bias=True)
+        self.rbf_att2 = Linear(hidden_channels, 1, bias=False)
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -116,6 +119,9 @@ class InteractionPPBlock(torch.nn.Module):
         glorot_orthogonal(self.lin_ji.weight, scale=2.0)
         self.lin_ji.bias.data.fill_(0)
 
+        glorot_orthogonal(self.rbf_att1.weight, scale=2.0)
+        glorot_orthogonal(self.rbf_att2.weight, scale=2.0)
+
         glorot_orthogonal(self.lin_down.weight, scale=2.0)
         glorot_orthogonal(self.lin_up.weight, scale=2.0)
 
@@ -126,7 +132,7 @@ class InteractionPPBlock(torch.nn.Module):
         for res_layer in self.layers_after_skip:
             res_layer.reset_parameters()
 
-    def forward(self, x, rbf, sbf, idx_kj, idx_ji):
+    def forward(self, x, rbf, sbf, idx_kj, idx_ji, update_pos=False):
         # Initial transformations.
         x_ji = self.act(self.lin_ji(x))
         x_kj = self.act(self.lin_kj(x))
@@ -155,7 +161,12 @@ class InteractionPPBlock(torch.nn.Module):
         for layer in self.layers_after_skip:
             h = layer(h)
 
-        return h
+        pos_update_coeff = None
+        if update_pos:
+            pos_update_coeff = self.act(self.rbf_att1(h))
+            pos_update_coeff = torch.tanh(self.rbf_att2(pos_update_coeff))
+
+        return h, pos_update_coeff
 
 
 class OutputPPBlock(torch.nn.Module):
@@ -322,8 +333,21 @@ class DimeNetPlusPlus(torch.nn.Module):
 
         return col, row, idx_i, idx_j, idx_k, idx_kj, idx_ji
 
-    def forward(self, z, pos, batch=None, mask=None):
-        """"""
+    def get_angle(
+        self, pos, idx_i, idx_j, idx_k):
+        pos_i = pos[idx_i].detach()
+        pos_j = pos[idx_j].detach()
+        pos_ji, pos_kj = (
+            pos[idx_j].detach() - pos_i,
+            pos[idx_k].detach() - pos_j,
+        )
+
+        a = (pos_ji * pos_kj).sum(dim=-1)
+        b = torch.cross(pos_ji, pos_kj).norm(dim=-1) + 1e-12
+        angle = torch.atan2(b, a)
+        return angle
+
+    def forward(self, z, pos, batch=None, mask=None, update_pos=False):
         edge_index = radius_graph(pos, r=self.cutoff, batch=batch)
         j, i = edge_index
         dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
@@ -333,16 +357,7 @@ class DimeNetPlusPlus(torch.nn.Module):
         )
 
         # Calculate angles.
-        pos_i = pos[idx_i].detach()
-        pos_j = pos[idx_j].detach()
-        pos_ji, pos_kj = (
-                pos[idx_j].detach() - pos_i,
-                pos[idx_k].detach() - pos_j,
-            )
-
-        a = (pos_ji * pos_kj).sum(dim=-1)
-        b = torch.cross(pos_ji, pos_kj).norm(dim=-1)
-        angle = torch.atan2(b, a)
+        angle = self.get_angle(pos, idx_i, idx_j, idx_k)
 
         rbf = self.rbf(dist)
         sbf = self.sbf(dist, angle, idx_kj)
@@ -352,12 +367,31 @@ class DimeNetPlusPlus(torch.nn.Module):
         P = self.output_blocks[0](x, rbf, i, num_nodes=pos.size(0))
 
         # Interaction blocks.
+        # dist_history = []
+        noise_pred = torch.zeros_like(pos)
         for interaction_block, output_block in zip(
             self.interaction_blocks, self.output_blocks[1:]
         ):
-            x = interaction_block(x, rbf, sbf, idx_kj, idx_ji)
+            x, pos_update_coeff = interaction_block(x, rbf, sbf, idx_kj, idx_ji, update_pos)
             P += output_block(x, rbf, i, num_nodes=pos.size(0))
 
-        # energy = P.sum(dim=0) if batch is None else scatter(P, batch, dim=0)
+            if update_pos:
+                pos_delta = scatter(
+                    (pos[i] - pos[j]) * pos_update_coeff, i, dim=0, reduce="mean"
+                )
+                pos = pos + pos_delta
 
-        return P
+                dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
+                angle = self.get_angle(pos, idx_i, idx_j, idx_k)
+
+                rbf = self.rbf(dist)
+                sbf = self.sbf(dist, angle, idx_kj)
+
+                # dist_history.append(dist)
+                noise_pred -= pos_delta
+
+        # energy = P.sum(dim=0) if batch is None else scatter(P, batch, dim=0)
+        if update_pos:
+            return noise_pred
+        else:
+            return P
