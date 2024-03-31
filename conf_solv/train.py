@@ -45,11 +45,11 @@ def train_conf_solv(config):
         check_finite=True,
     )
     neptune_logger = NeptuneLogger(
-        project="shihchengli/confsolv",
+        project="lagnajit/conf-solv",
         api_token=os.environ["NEPTUNE_API_TOKEN"],
         tags=[],
-        #mode="offline",
-        source_files=["~/packages/conf_solv/*/*.py"],
+        mode="offline",
+        source_files=["conf_solv/*/*.py"],
     )
     try:
         neptune_logger.run
