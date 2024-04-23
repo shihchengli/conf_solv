@@ -186,6 +186,9 @@ class Denoising(nn.Module):
                 num_output_layers=2
             )
 
+        elif self.solute_model_type == "EGNN":
+            self.solute_model = EGNN(config)
+
         else:
             raise ValueError(f"The {self.solute_model_type} model is not supported yet for pre-traininig via molecular denoising.")
 

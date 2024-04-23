@@ -215,14 +215,18 @@ class EGNN(nn.Module):
             )
         self.node_init = nn.Embedding(95, config["solute_hidden_dim"])
 
-    def forward(self, z, pos, batch=None, mask=None):
+    def forward(self, z, pos, batch=None, mask=None, update_pos=False):
 
         x = torch.cat([pos, self.node_init(z)], dim=-1)
         edge_index = radius_graph(pos, r=self.cutoff, batch=batch)
 
         for layer in self.egnn_layers:
             x = layer(x=x, edge_index=edge_index, edge_attr=None, batch=batch)
-        return x[:, 3:]
+
+        if update_pos:
+            return pos - x[:, :3]
+        else:
+            return x[:, 3:]
 
 
 class CoorsNorm(nn.Module):
