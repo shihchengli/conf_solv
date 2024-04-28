@@ -301,6 +301,7 @@ class DenoisingModule(pl.LightningModule):
         parser.add_argument('--lr', type=float, default=1e-3)
         parser.add_argument('--weight_decay', type=float, default=0)
         parser.add_argument('--num_workers', type=int, default=2)
+        parser.add_argument('--max_confs', type=int, default=10)
         parser.add_argument('--relative_model', action='store_true', default=False)
         parser.add_argument('--relative_loss', action='store_true', default=False)
         parser.add_argument('--n_training_points', type=int, default=None)

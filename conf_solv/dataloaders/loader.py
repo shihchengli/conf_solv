@@ -237,24 +237,14 @@ class SolventData3DModule(pl.LightningDataModule):
 
 
 class NoisyData(Data):
-    def __init__(self, z_solute, pos_solute=None, noisy_pos_solute=None, position_noise_scale=None):
+    def __init__(self, z_solute=None, pos_solute=None, noisy_pos_solute=None, pos_target=None, position_noise_scale=None):
 
         super(NoisyData, self).__init__()
 
         self.z_solute = z_solute
         self.pos_solute = pos_solute
         self.noisy_pos_solute = noisy_pos_solute
-        self.position_noise_scale = position_noise_scale
-
-        if noisy_pos_solute is None and position_noise_scale is not None:
-            noise = torch.randn_like(pos_solute) * position_noise_scale
-            self.pos_ori = pos_solute
-            self.noisy_pos_solute = pos_solute + noise
-        
-        if pos_solute is not None and self.noisy_pos_solute is not None:
-            self.pos_target = self.noisy_pos_solute - self.pos_solute
-        else:
-            self.pos_target = None
+        self.pos_target = pos_target
 
     def __inc__(self, key, value, *args, **kwargs):
         if key == 'edge_index':
@@ -269,12 +259,14 @@ class NoisyDataset(Dataset):
 
         self.split_idx = 0 if mode == 'train' else 1 if mode == 'val' else 2
         self.split = split[self.split_idx]
+        self.max_confs = config["max_confs"]
 
         position_noise_scale = config["position_noise_scale"]
         if mode == 'train' and config["n_training_points"]:
             self.split = self.split[:config["n_training_points"]]
 
         coords_df = coords_df[coords_df['mol_id'].isin(self.split)].copy()
+        coords_df = coords_df.groupby('mol_id', group_keys=False).apply(lambda g: g.sample(n=min(len(g), self.max_confs)))
         self.mol_conf_ids = (coords_df['mol_id'] + coords_df['conf_id']).tolist()
         coords_df['mol_conf_id'] = self.mol_conf_ids
         self.coords = coords_df.set_index(['mol_conf_id'])
@@ -282,9 +274,15 @@ class NoisyDataset(Dataset):
         self.graph_data_dict = {}
         for label in self.mol_conf_ids:
             mol = self.coords.loc[label]['mol']
+            noise = self.coords.loc[label]['noise']
+            noised_mol = self.coords.loc[label]['noised_mol']
+
             z_solute = torch.tensor(mol.get_atomic_numbers(), dtype=torch.int64)
             pos_solute = torch.tensor(mol.positions, dtype=torch.float32)
-            d = NoisyData(z_solute=z_solute, pos_solute=pos_solute, position_noise_scale=position_noise_scale)
+            pos_target = torch.tensor(noise.positions, dtype=torch.float32)
+            noisy_pos_solute = torch.tensor(noised_mol.positions, dtype=torch.float32)
+
+            d = NoisyData(z_solute=z_solute, pos_solute=pos_solute, noisy_pos_solute=noisy_pos_solute,  pos_target=pos_target, position_noise_scale=position_noise_scale)
             d.mol_conf_id = label
             self.graph_data_dict[label] = d
 
