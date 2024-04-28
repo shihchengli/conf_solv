@@ -348,7 +348,7 @@ class DimeNetPlusPlus(torch.nn.Module):
         return angle
 
     def forward(self, z, pos, batch=None, mask=None, update_pos=False):
-        edge_index = radius_graph(pos, r=self.cutoff, batch=batch)
+        edge_index = radius_graph(pos, r=self.cutoff, batch=batch, max_num_neighbors=500)
         j, i = edge_index
         dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
 
