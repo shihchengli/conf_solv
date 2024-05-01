@@ -1,5 +1,6 @@
 import torch
 from torch.nn import functional as F
+from torch_geometric.nn import radius_graph
 import pytorch_lightning as pl
 from conf_solv.model.model import ConfSolv, Denoising
 import numpy as np
@@ -21,7 +22,8 @@ class LitConfSolvModule(pl.LightningModule):
         self.max_confs = config["max_confs"]
 
     def forward(self, data, max_confs):
-        return self.model(data, max_confs)
+        P, _, _ = self.model(data, max_confs)
+        return P
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -210,11 +212,13 @@ class DenoisingModule(pl.LightningModule):
         self.model = Denoising(config)
         self.config = config
         self.lr = config["lr"]
+        self.gradual_denoising_loss = config["gradual_denoising_loss"]
         self.weight_decay = config["weight_decay"]
         self.debug = config["debug"]
 
     def forward(self, data):
-        return self.model(data)
+        _, noise_pred, noise_history = self.model(data)
+        return noise_pred, noise_history
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
@@ -223,10 +227,18 @@ class DenoisingModule(pl.LightningModule):
         return {"optimizer": optimizer, "scheduler": scheduler, "monitor": "val_loss"}
 
     def _step(self, data, mode):
-        noise_pred = self(data)
-        loss = F.mse_loss(noise_pred, data.pos_target)
+        noise_pred, noise_history = self(data)
+        if self.gradual_denoising_loss:
+            pos_target = data.pos_target
+            num_pos_steps = len(noise_history)
+            loss = 0
+            for idx, predict_noise in enumerate(noise_history):
+                target_noise = pos_target * (idx + 1) / num_pos_steps
+                loss += F.mse_loss(predict_noise, target_noise)
+        else:
+            loss = F.mse_loss(noise_pred, data.pos_target)
         batch_size = len(data.mol_conf_id)
-        rmse = torch.sqrt(loss.detach())
+        rmse = torch.sqrt(F.mse_loss(noise_pred, data.pos_target).detach())
         mae = F.l1_loss(noise_pred, data.pos_target)
 
         # logs
@@ -304,6 +316,7 @@ class DenoisingModule(pl.LightningModule):
         parser.add_argument('--max_confs', type=int, default=10)
         parser.add_argument('--relative_model', action='store_true', default=False)
         parser.add_argument('--relative_loss', action='store_true', default=False)
+        parser.add_argument('--gradual_denoising_loss', action='store_true', default=False)
         parser.add_argument('--n_training_points', type=int, default=None)
         parser.add_argument('--position_noise_scale', type=float, default=0.04)
 

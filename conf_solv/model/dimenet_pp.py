@@ -367,7 +367,7 @@ class DimeNetPlusPlus(torch.nn.Module):
         P = self.output_blocks[0](x, rbf, i, num_nodes=pos.size(0))
 
         # Interaction blocks.
-        # dist_history = []
+        noise_history = []
         noise_pred = torch.zeros_like(pos)
         for interaction_block, output_block in zip(
             self.interaction_blocks, self.output_blocks[1:]
@@ -387,11 +387,8 @@ class DimeNetPlusPlus(torch.nn.Module):
                 rbf = self.rbf(dist)
                 sbf = self.sbf(dist, angle, idx_kj)
 
-                # dist_history.append(dist)
+                noise_history.append(-pos_delta)
                 noise_pred -= pos_delta
 
         # energy = P.sum(dim=0) if batch is None else scatter(P, batch, dim=0)
-        if update_pos:
-            return noise_pred
-        else:
-            return P
+        return P, noise_pred, noise_history
