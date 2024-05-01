@@ -218,7 +218,7 @@ class EGNN(nn.Module):
     def forward(self, z, pos, batch=None, mask=None, update_pos=False):
 
         x = torch.cat([pos, self.node_init(z)], dim=-1)
-        edge_index = radius_graph(pos, r=self.cutoff, batch=batch, max_num_neighbors=500)
+        edge_index = radius_graph(pos, r=self.cutoff, batch=batch, max_num_neighbors=100)
 
         for layer in self.egnn_layers:
             x = layer(x=x, edge_index=edge_index, edge_attr=None, batch=batch)
